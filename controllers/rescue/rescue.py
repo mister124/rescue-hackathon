@@ -10,7 +10,7 @@ from config import *
 from slam import Slam, wrap
 import nav
 
-cv2 = None  # Webots/OpenCV는 main에서만 로드: 상태 머신 테스트에는 numpy만 필요
+cv2 = None  # D의 영상 처리는 main에서 초기화; B nav는 OpenCV를 직접 import
 TERMINAL = {"DONE", "TIMEOUT", "ERROR"}
 
 
@@ -162,13 +162,13 @@ class Mission:
                 self.give_up(elapsed, "접근 시간/진행 한도 초과")
                 return 0.0, 0.0
         interval = PLAN_INTERVAL_S if self.path else EMPTY_REPLAN_S
-        if elapsed - self.last_plan >= interval:
+        if self.follower.backup_until is None and elapsed - self.last_plan >= interval:
             self.last_plan = elapsed
             occ = self.grid.occupancy()
             blocks = nav.make_blocks(occ)
             if self.state == "EXPLORE":
                 # frontier를 유지하면서 현재 지도로 재계획.
-                if self.goal and math.hypot(self.goal[0] - pose[0], self.goal[1] - pose[1]) > GOAL_TOL:
+                if self.goal and math.hypot(self.goal[0] - pose[0], self.goal[1] - pose[1]) > nav.ARRIVE_R:
                     self.path = nav.plan(self.grid, blocks, pose, self.goal)
                     if not self.path:
                         self.blacklist.append(self.goal)
@@ -196,7 +196,7 @@ class Mission:
             elif self.state == "RETURN":
                 self.goal = (START_X, START_Y)
                 self.path = nav.plan(self.grid, blocks, pose, self.goal)
-        if not self.path:
+        if not self.path and self.follower.backup_until is None:
             return (0.0, SEARCH_SPIN_W) if self.state == "EXPLORE" else (0.0, 0.0)
         v, w, stuck = self.follower.step(self.path, pose, ranges, angles, elapsed)
         if stuck:

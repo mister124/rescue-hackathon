@@ -1,4 +1,4 @@
-"""numpy만으로 실행: python -m unittest discover -s tests -v"""
+"""requirements.txt 설치 후 실행: python -m unittest discover -s tests -v"""
 import contextlib
 import io
 from pathlib import Path
@@ -46,6 +46,21 @@ class MissionTests(unittest.TestCase):
 
     def step(self, m, elapsed, pose=(0, 0, 0), **kwargs):
         return m.step(elapsed, pose, self.ranges, self.angles, **kwargs)
+
+    def test_b_backup_continues_without_path_and_then_replans(self):
+        self.follower.stop()  # 실제 B Follower의 후진 연결 확인
+        m = self.mission()
+        m.state = 'EXPLORE'
+        m.follower.backup_until = 4.0
+        with patch.object(r.nav, 'make_blocks') as blocks:
+            self.assertEqual(self.step(m, 2), (r.nav.BACKUP_V, 0.0))
+            blocks.assert_not_called()
+            self.assertEqual(self.step(m, 4), (0.0, 0.0))
+        self.assertIsNone(m.follower.backup_until)
+        self.assertEqual(m.last_plan, -float('inf'))
+        self.follower.start()
+        self.step(m, 4.1)
+        self.assertTrue(m.path)
 
     def test_warmup_stops(self):
         m = self.mission()

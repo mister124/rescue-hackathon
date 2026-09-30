@@ -8,9 +8,9 @@ orthographicViewHeight: 1
 textFiles: -1
 globalOptionalRendering: LidarPointClouds
 consoles: Console:All:All
-renderingDevicePerspectives: TurtleBot3Burger:Camera YOLO;1;0.5;0.02;0.45
-renderingDevicePerspectives: TurtleBot3Burger:Global Map;1;0.553333;0.524027;0.0249112
-renderingDevicePerspectives: TurtleBot3Burger:Lidar Point Cloud;1;0.961111;0.620138;0.449585
-renderingDevicePerspectives: TurtleBot3Burger:camera;0;0.325;0.647317;0.5
 renderingDevicePerspectives: laptop:display;0;0.346774;0;0
 renderingDevicePerspectives: television:display;0;1;0;0
+renderingDevicePerspectives: TurtleBot3Burger:Camera YOLO;1;0.5;0.02;0.45
+renderingDevicePerspectives: TurtleBot3Burger:Global Map;1;0.55;0.52;0.02
+renderingDevicePerspectives: TurtleBot3Burger:Lidar Point Cloud;1;0.8;0.65;0.5
+renderingDevicePerspectives: TurtleBot3Burger:camera;0;0.5;0;0

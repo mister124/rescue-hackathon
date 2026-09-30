@@ -316,11 +316,11 @@ def main():
         windows = False
     try:
         devices = list_devices(robot)
-        map_display = devices.get("Global Map")
-        camera_display = require(devices, "Camera YOLO", "카메라 결과 Display")
+        map_display = require(devices, GLOBAL_MAP_DISPLAY, "지도 Display")
+        camera_display = require(devices, CAMERA_DISPLAY, "카메라 결과 Display")
         if not hasattr(camera_display, "imagePaste"):
             raise RuntimeError("Camera YOLO는 Camera 센서가 아닌 Display 노드여야 합니다")
-        lidar_display = devices.get("Lidar Point Cloud")
+        lidar_display = require(devices, LIDAR_DISPLAY, "LiDAR Display")
         if map_display is not None and camera_display is not None:
             windows = False
         for name in (LEFT_MOTOR, RIGHT_MOTOR):

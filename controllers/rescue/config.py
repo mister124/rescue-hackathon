@@ -5,19 +5,23 @@
 
 import math
 import os
+from pathlib import Path
 
 # ============================ [D] 미션 / 장치 ============================
 LEFT_MOTOR, RIGHT_MOTOR = "left wheel motor", "right wheel motor"
 LEFT_ENC, RIGHT_ENC = "left wheel sensor", "right wheel sensor"
 LIDAR_NAME, CAMERA_NAME = "LDS-01", "camera"
 GYRO_NAME, COMPASS_NAME = "gyro", "compass"
+GLOBAL_MAP_DISPLAY = "Global Map"
+CAMERA_DISPLAY = "Camera YOLO"
+LIDAR_DISPLAY = "Lidar Point Cloud"
 
 START_X, START_Y, START_YAW = (
     0.0,
     0.0,
     0.0,
 )  # 시작점 기준 좌표. 보통 (0, 0, 0); 월드 translation 복사 불필요
-NUM_TARGETS = 2  # 찾아야 할 대상 수 (연습 월드: 초록 사과 1개)
+NUM_TARGETS = 2  # 찾아야 할 빨간 사과 수
 TIME_LIMIT_S = 1000.0  # 제한 시간 [s] (시뮬레이션 시간)
 RETURN_MARGIN_S = 100.0  # 제한 시간 이만큼 전에는 무조건 복귀 시작
 WARMUP_S = 1.0  # 시작 후 이 시간 동안은 지도만 그림
@@ -26,7 +30,7 @@ GOTO_GIVEUP_S = 15.0  # 경로 없음/접근 진행 없음 허용 시간
 APPROACH_DIST = 0.5  # 대상 앞 몇 m 지점까지 갈지
 GOAL_TOL = 0.2  # 도착 판정 거리
 
-SHOW_WINDOWS = os.environ.get("RESCUE_SHOW", "1") == "1"  # 지도/카메라 OpenCV 창
+SHOW_WINDOWS = os.environ.get("RESCUE_SHOW", "0") == "1"  # 기본 출력은 월드 내부 Display
 USE_GT_DEBUG = False  # True면 Supervisor로 실제 위치와 오차 출력 (월드에 supervisor TRUE 필요, 제출 시 False)
 TELEOP_SPEED = 3.0  # M키로 수동 모드 전환 후 WASD 바퀴 속도 [rad/s]
 
@@ -69,7 +73,7 @@ MAP_SIZE_M = 20.0  # 지도 한 변 길이 [m]
 RES = 0.05  # 지도 한 칸 크기 [m]
 
 # ============================ [B] 주행 / 안전 ============================
-MAX_WHEEL_SPEED = 6.67  # 모터 최대 각속도 [rad/s] (한계 6.67)
+MAX_WHEEL_SPEED = 6.0  # 모터 최대 각속도 [rad/s] (한계 6.67)
 ROBOT_RADIUS = 0.12  # 로봇 반경 [m] (실제 0.105 + 여유)
 INFLATE_M = ROBOT_RADIUS + 0.10  # 전역 경로용 안전거리
 INFLATE_MIN_M = ROBOT_RADIUS + 0.03  # 경로가 없을 때 쓰는 최소 안전거리 (좁은 문)
@@ -107,11 +111,10 @@ TARGET_COLORS = {
     #"green": ("lab", [((30, 60, 90), (230, 115, 180))]),
     "red": ("hsv", [((0, 150, 80), (8, 255, 255)), ((172, 150, 80), (180, 255, 255))]),
 }
-YOLO_MODEL = "../../models/YOLO/yolo11n.pt"
-YOLO_CLASSES = {47: "apple"}  # COCO id → 대상 이름 (32 공, 47 사과, 49 오렌지)
+YOLO_MODEL = str(Path(__file__).resolve().parents[2] / "models" / "YOLO" / "yolo11n.pt")
+YOLO_CLASSES = {0: "human", 47: "apple"}
 YOLO_CONF = 0.25
 TARGET_MIN_AREA = 300  # 이 픽셀 수 이상 보여야 대상으로 인정
 CONFIRM_N = 3  # 같은 자리에서 이만큼 보여야 대상으로 확정
 MERGE_R = 0.8  # 이 거리 안의 같은 종류 관측은 같은 대상 [m]
-CAM_HEIGHT = 0.073  # 카메라 높이 [m] (extensionSlot 0.153 + 카메라 -0.08)
 DETECT_EVERY = 5  # 몇 step마다 카메라 처리

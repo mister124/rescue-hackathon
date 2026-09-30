@@ -51,7 +51,7 @@ def find_frontiers(occ, blocked):
 MIN_FRONTIER_CELLS = 5          # 이보다 작은 frontier 덩어리는 잡음(가구 밑 틈 등)으로 보고 무시
 
 NO_GO = []                      # 막혔던 위치 (x, y, 등록 시각). 경로 계획과 frontier 선택에서 장애물로 취급
-NO_GO_R = 0.35                  # 진입 금지 반경 [m]
+NO_GO_R = 0.25                  # 진입 금지 반경 [m] (크면 옆 통로까지 막아 우회 못 함)
 NO_GO_TTL = 60.0                # 진입 금지 유지 시간 [s] (보행자 때문에 막힌 문이 영원히 닫히지 않게)
 
 def with_no_go(grid, blocks):
@@ -72,36 +72,34 @@ def with_no_go(grid, blocks):
 def pick_frontier(grid, occ, blocks, pose, blacklist):
     """frontier를 덩어리로 묶고, 가까운 덩어리부터 경로가 나오는 것을 고름.
     덩어리마다 중심에 가장 가까운 칸이 대표점. 가던 목표가 남아 있으면 계속 그쪽.
+    blacklist: 호환용 인자. 쓰지 않음 (영구 제외가 쌓이면 남은 frontier가 빠져 탐색이 일찍 끝남)
     반환 (goal, path) / 없으면 (None, [])"""
     walls = blocks[-1]                          # 실제 벽 판정용은 진입 금지를 칠하기 전 지도
     blocks = with_no_go(grid, blocks)
-    goal, path = _pick(grid, occ, blocks, pose, blacklist, walls)
+    goal, path = _pick(grid, occ, blocks, pose, walls)
     if path:
         return goal, path
     # 진단: frontier를 못 찾은 순간의 지도를 저장 (처음 3번만). controllers/rescue/nav_dump_N.npz
     if _dumps[0] < 3:
         _dumps[0] += 1
         np.savez_compressed(f"nav_dump_{_dumps[0]}.npz", occ=occ, b0=blocks[0], b1=blocks[1], b2=blocks[2],
-                            walls=walls, pose=np.array(pose), blacklist=np.array(blacklist).reshape(-1, 2),
+                            walls=walls, pose=np.array(pose),
                             no_go=np.array([e[:2] for e in NO_GO]).reshape(-1, 2), origin=np.array([grid.ox, grid.oy]))
         print(f"[NAV] 진단 지도 저장: nav_dump_{_dumps[0]}.npz", flush=True)
-    log(f"[NAV] 갈 frontier 없음 → 제자리 회전 (blacklist {len(blacklist)}곳, 진입금지 {len(NO_GO)}곳)")
+    log(f"[NAV] 갈 frontier 없음 → 제자리 회전 (진입금지 {len(NO_GO)}곳)")
     return None, []
 
 
 _dumps = [0]
-_retried = []                   # blacklist에서 재시도한 frontier (한 번만)
 COMMIT_R = 0.8                  # 가던 목표에서 이 거리 안에 frontier가 남아 있으면 계속 그쪽으로
 TURN_W = 0.5                    # 새 목표를 고를 때 돌아야 하는 각도 1 rad당 0.5m 먼 것으로 침
-ARRIVE_R = 0.6                  # 가던 목표에 이만큼 다가가면 완료 처리 (blacklist)
+ARRIVE_R = 0.6                  # 이보다 가까운 frontier는 목표로 안 고름, 가던 목표도 여기서 완료
 _cur = [None]                   # 지금 가고 있는 frontier 목표
 
 
-def _pick(grid, occ, blocks, pose, blacklist, walls):
-    # 가던 목표에 도착했는데도 frontier가 남아 있으면 관측할 수 없는 곳(가구 밑 등) → 다시 안 감
+def _pick(grid, occ, blocks, pose, walls):
     if _cur[0] and math.hypot(pose[0] - _cur[0][0], pose[1] - _cur[0][1]) < ARRIVE_R:
-        blacklist.append(_cur[0])
-        _cur[0] = None
+        _cur[0] = None                          # 가던 목표 도착 → 새로 고름
     # 최소 안전거리 지도 기준: 문틀이 LiDAR 잡음으로 두껍게 찍혀도 방 안 frontier가 후보에서 빠지지 않게
     cells = find_frontiers(occ, blocks[1])
     if not len(cells):
@@ -114,7 +112,7 @@ def _pick(grid, occ, blocks, pose, blacklist, walls):
     dist = np.hypot(pts[:, 0] - pose[0], pts[:, 1] - pose[1])
     reach = reachable(grid, blocks[:2], pose, walls)
 
-    reps, retry = [], []                        # (비용, 대표점), blacklist에 있던 것
+    reps = []                                   # (비용, 대표점)
     for k in np.unique(lab):
         idx = np.where(lab == k)[0]
         if len(idx) < MIN_FRONTIER_CELLS:
@@ -126,16 +124,7 @@ def _pick(grid, occ, blocks, pose, blacklist, walls):
         if dist[i] < ARRIVE_R:
             continue
         p = (float(pts[i][0]), float(pts[i][1]))
-        # 지금 갈 수 없는 곳은 이번만 건너뜀 (blacklist에 넣으면 로봇이 벽에 붙은 한순간에
-        # 모든 frontier가 영구 제외되어 "더 탐색할 곳 없음"으로 일찍 복귀함)
-        if not reach[tuple(cells[i])]:
-            continue
-        near = lambda pts_: any(math.hypot(p[0] - b[0], p[1] - b[1]) < 0.5 for b in pts_)
-        if near(blacklist):
-            # blacklist는 후순위: 다른 곳이 없을 때 한 번 더 시도 (보행자에 막혀 등록된 경우가 많음.
-            # 영구 제외하면 남은 frontier가 전부 빠져 탐색이 일찍 끝남)
-            if not near(_retried):
-                retry.append((dist[i], p))
+        if not reach[tuple(cells[i])]:           # 지금 갈 수 없는 곳은 이번만 건너뜀
             continue
         # 가던 목표가 아직 남아 있으면 최우선 (매번 가장 가까운 것을 새로 고르면 목표가 1.5초마다
         # 이리저리 바뀌어 방향이 크게 틀어지고 제자리 회전만 반복함). 아니면 거리 + 회전량
@@ -150,14 +139,6 @@ def _pick(grid, occ, blocks, pose, blacklist, walls):
         path = plan(grid, blocks, pose, p, walls)
         if path:
             _cur[0] = p
-            return p, path
-        blacklist.append(p)
-    for _, p in sorted(retry):
-        path = plan(grid, blocks, pose, p, walls)
-        if path:
-            _retried.append(p)
-            _cur[0] = p
-            print(f"[NAV] 막혔던 frontier ({p[0]:.2f}, {p[1]:.2f}) 재시도", flush=True)
             return p, path
     _cur[0] = None
     return None, []

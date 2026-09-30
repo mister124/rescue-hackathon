@@ -354,6 +354,11 @@ def main():
             raise RuntimeError(f"카메라 '{CAMERA_NAME}' 없음: 미션에는 카메라 필요")
         if camera:
             camera.enable(ts)
+            if camera_display is not None:
+                camera_display.attachCamera(camera)
+                print("[DISPLAY] Camera connected")
+            else:
+                print("[WARN] Camera Display 없음: apartment.wbt를 다시 로드하세요")
         else:
             print("[WARN] 카메라 없이 지도/주행 테스트: 검출 불가")
         gyro = devices.get(GYRO_NAME) if USE_GYRO else None
@@ -457,6 +462,9 @@ def main():
                 frame = percep.grab()
                 if frame is not None and frame.size:
                     dets = percep.detect(frame)
+                    view = Perception.draw(frame, dets)
+                    if camera_display is not None:
+                        paste_display(camera_display, view)
                     for det in dets:
                         if det["cls"] != "apple" or det.get("color") != "red":
                             continue
@@ -486,10 +494,7 @@ def main():
                         if map_display is not None or windows:
                             draw_map(slam.grid, slam.grid.occupancy(), pose, mission.path, book.confirmed(), mission.goal, status, map_display)
                         if frame is not None:
-                            view = Perception.draw(percep.prediction_frame, dets)
-                            if camera_display is not None:
-                                paste_display(camera_display, view)
-                            elif windows:
+                            if camera_display is None and windows:
                                 cv2.imshow("camera", view)
                     if windows and (cv2.waitKey(1) & 0xFF) == ord("s") and frame is not None:
                         filename = Path(__file__).resolve().parent / "frame.jpg"

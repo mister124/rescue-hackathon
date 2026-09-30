@@ -18,8 +18,8 @@ START_X, START_Y, START_YAW = (
     0.0,
 )  # 시작점 기준 좌표. 보통 (0, 0, 0); 월드 translation 복사 불필요
 NUM_TARGETS = 2  # 찾아야 할 대상 수 (연습 월드: 초록 사과 1개)
-TIME_LIMIT_S = 600.0  # 제한 시간 [s] (시뮬레이션 시간)
-RETURN_MARGIN_S = 120.0  # 제한 시간 이만큼 전에는 무조건 복귀 시작
+TIME_LIMIT_S = 1000.0  # 제한 시간 [s] (시뮬레이션 시간)
+RETURN_MARGIN_S = 100.0  # 제한 시간 이만큼 전에는 무조건 복귀 시작
 WARMUP_S = 1.0  # 시작 후 이 시간 동안은 지도만 그림
 EXPLORE_FAIL_LIMIT = 10  # frontier를 연속 이만큼 못 찾으면 탐색 종료
 GOTO_GIVEUP_S = 15.0  # 경로 없음/접근 진행 없음 허용 시간
@@ -69,7 +69,7 @@ MAP_SIZE_M = 20.0  # 지도 한 변 길이 [m]
 RES = 0.05  # 지도 한 칸 크기 [m]
 
 # ============================ [B] 주행 / 안전 ============================
-MAX_WHEEL_SPEED = 6.0  # 모터 최대 각속도 [rad/s] (한계 6.67)
+MAX_WHEEL_SPEED = 6.67  # 모터 최대 각속도 [rad/s] (한계 6.67)
 ROBOT_RADIUS = 0.12  # 로봇 반경 [m] (실제 0.105 + 여유)
 INFLATE_M = ROBOT_RADIUS + 0.10  # 전역 경로용 안전거리
 INFLATE_MIN_M = ROBOT_RADIUS + 0.03  # 경로가 없을 때 쓰는 최소 안전거리 (좁은 문)

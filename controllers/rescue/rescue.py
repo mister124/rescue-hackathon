@@ -60,7 +60,79 @@ def limited_wheels(left, right, left_limit, right_limit):
     scale = max(1.0, abs(left) / left_limit, abs(right) / right_limit)
     return left / scale, right / scale
 
+def guard_velocity(v, w, ranges, angles):
+    """진행 영역에 가까운 장애물이 있으면 양쪽 모터 정지."""
+    if abs(v) < 1e-6 and abs(w) < 1e-6:
+        return 0.0, 0.0
 
+    if ranges is None or angles is None:
+        return 0.0, 0.0
+
+    ranges = np.asarray(ranges, dtype=float)
+    angles = np.asarray(angles, dtype=float)
+
+    if (
+        ranges.ndim != 1
+        or ranges.shape != angles.shape
+        or ranges.size == 0
+        or not np.isfinite(angles).all()
+    ):
+        return 0.0, 0.0
+
+    # 진행 방향의 센서 상태 확인.
+    if v > 1e-6:
+        sector = np.abs(angles) <= math.radians(60)
+    elif v < -1e-6:
+        sector = np.abs(angles) >= math.radians(120)
+    else:
+        sector = np.ones(angles.shape, dtype=bool)
+
+    if not np.any(sector):
+        return 0.0, 0.0
+
+    invalid = np.isnan(ranges) | (ranges <= 0)
+    if np.any(invalid & sector):
+        return 0.0, 0.0
+
+    # +inf는 반사점 없음으로 유지. 유한한 측정점만 좌표 변환.
+    valid = np.isfinite(ranges) & (ranges > 0)
+    x = (
+        ranges[valid] * np.cos(angles[valid])
+        + LIDAR_OFFSET_X
+    )
+    y = ranges[valid] * np.sin(angles[valid])
+    distance = np.hypot(x, y)
+
+    # 몸체 바로 주변의 장애물 검사.
+    if np.any(distance <= ROBOT_RADIUS + 0.01):
+        return 0.0, 0.0
+
+    half_width = ROBOT_RADIUS + D_SIDE_MARGIN
+
+    if v > 1e-6:
+        danger = (
+            (x >= 0)
+            & (x <= D_STOP_DIST)
+            & (np.abs(y) <= half_width)
+        )
+    elif v < -1e-6:
+        danger = (
+            (x <= 0)
+            & (x >= -D_STOP_DIST)
+            & (np.abs(y) <= half_width)
+        )
+    else:
+        danger = np.zeros(x.shape, dtype=bool)
+
+    if abs(w) > 1e-6:
+        danger |= distance <= (
+            ROBOT_RADIUS + D_ROTATE_MARGIN
+        )
+
+    if np.any(danger):
+        return 0.0, 0.0
+
+    return v, w
 class Mission:
     """elapsed: 컨트롤러 시작 이후 경과한 시뮬레이션 초. 실제 시간과 구별."""
     def __init__(self, grid, book):
@@ -297,12 +369,38 @@ def main():
             motor.setVelocity(0.0)
         limits = [min(MAX_WHEEL_SPEED, m.getMaxVelocity()) for m in motors]
         limited_wheels(0, 0, *limits)
+        ranges = None
+        angles = None
 
         def set_raw(left, right):
             left, right = limited_wheels(left, right, *limits)
+
+            # 바퀴 각속도 → 로봇 선속도·각속도
+            v = WHEEL_RADIUS * (left + right) / 2
+            w = WHEEL_RADIUS * (right - left) / AXLE_LENGTH
+
+            safe_v, safe_w = guard_velocity(
+                v, w, ranges, angles
+            )
+
+            # 실제 이동 명령이 차단될 때 진단 출력.
+            if (
+                abs(v) + abs(w) > 1e-6
+                and abs(safe_v) + abs(safe_w) < 1e-6
+            ):
+                nav.log("[GUARD] 장애물 근접 또는 센서 무효: 정지")
+
+            # 검사 결과 → 바퀴 각속도
+            left = (
+                safe_v - safe_w * AXLE_LENGTH / 2
+            ) / WHEEL_RADIUS
+            right = (
+                safe_v + safe_w * AXLE_LENGTH / 2
+            ) / WHEEL_RADIUS
+
+            left, right = limited_wheels(left, right, *limits)
             motors[0].setVelocity(left)
             motors[1].setVelocity(right)
-
         def set_wheels(v, w):
             set_raw((v - w * AXLE_LENGTH / 2) / WHEEL_RADIUS,
                     (v + w * AXLE_LENGTH / 2) / WHEEL_RADIUS)

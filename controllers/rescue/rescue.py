@@ -276,7 +276,7 @@ def main():
         from perception import Perception, localize, TargetBook
         from controller import Robot, Supervisor
     except ImportError as exc:
-        raise RuntimeError("Webots에서 실행하고, 사용 중인 Python에 numpy/opencv-python을 설치하세요") from exc
+        raise RuntimeError("Webots에서 실행하고, 사용 중인 Python에 requirements.txt의 패키지를 설치하세요") from exc
     cv2 = opencv
     robot = Supervisor() if USE_GT_DEBUG else Robot()
     ts = int(robot.getBasicTimeStep())
@@ -343,7 +343,12 @@ def main():
         slam = Slam(*pose)
         book = TargetBook()
         mission = Mission(slam.grid, book)
-        percep = Perception(camera) if camera else None
+        try:
+            percep = Perception(camera) if camera else None
+        except ImportError as exc:
+            raise RuntimeError("C 검출기 의존성 설치 필요: python -m pip install -r requirements.txt") from exc
+        if camera:
+            print(f"[DETECTOR] C YOLO / 빨간 사과 / CPU / 모델: {YOLO_MODEL}")
         gt_node = robot.getSelf() if USE_GT_DEBUG else None
         if USE_GT_DEBUG and gt_node is None:
             raise RuntimeError("USE_GT_DEBUG=True에는 월드의 supervisor TRUE 필요")

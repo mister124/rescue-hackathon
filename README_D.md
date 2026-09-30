@@ -1,18 +1,18 @@
 # D 통합·미션 완성본
 
 첨부 TEAM.md에 따라 `controllers/rescue/rescue.py`와 `config.py`의 [D] 구역만 수정했다.
-`slam.py`, `nav.py`, `perception.py`, config의 [A]/[B]/[C] 구역은 원본과 동일하다.
+`slam.py`는 새로 받은 [A] SLAM 파일을 반영했다. `nav.py`와 `perception.py`, config의 [B]/[C] 구역은 전달받은 원본 상태다.
 
 ## 1. 적용
 
 이 ZIP은 Webots 프로젝트 루트 기준 구조다. `controllers/rescue/` 안의 Python 파일이 컨트롤러이며, 원래 ZIP처럼 Python 파일만 최상위에 놓는 구조와 다르다.
 
 1. Webots 시뮬레이션을 멈추고 기존 프로젝트를 먼저 Git 커밋하거나 별도 백업한다.
-2. 기존 프로젝트에서 `controllers/rescue/rescue.py`를 이 버전으로 교체한다.
-3. `config.py`는 [D] 구역만 병합한다. 팀원이 [A]/[B]/[C] 값을 바꿨다면 파일 전체를 덮어쓰지 않는다.
+2. `controllers/rescue/rescue.py`와 받은 [A] `slam.txt`의 내용을 각각 `rescue.py`, `slam.py`에 적용한다.
+3. `config.py`는 [A]/[D] 구역만 병합한다. 특히 아래에 설명한 새 [A] 설정을 추가한다. B/C 구역은 팀원 최신 설정을 보존한다.
 4. tests/, README_D.md, GIT_GUIDE.md, requirements.txt, .gitignore를 프로젝트 루트에 추가한다. 기존 .gitignore가 있으면 규칙만 추가한다.
-5. 팀원의 A/B/C 개발분은 기존 것을 유지한다. ZIP에 포함한 A/B/C는 사용자 첨부 원본이며 최신 팀원 작업을 대체하는 용도가 아니다.
-6. 기존 `worlds/breakroom_rescue.wbt`를 Webots에서 열고 로봇의 `controller`를 `rescue`로 설정한 뒤 월드를 저장한다.
+5. 최신 팀원의 B/C 파일과 config 설정을 유지한다.
+6. 기존 Webots 월드와 리소스는 프로젝트에서 사용 중인 것을 그대로 유지한다. 로봇의 `controller`가 `rescue`인지 확인하고 월드를 저장한다.
 7. 시뮬레이션을 Reset/Revert하여 시작 위치부터 다시 실행한다. 컨트롤러만 재시작하면 지도/타이머가 현재 위치에서 새로 시작하므로 공식 실행 전에는 월드도 초기화한다.
 
 월드 파일, PROTO, 모델/텍스처는 첨부에 없어 이 ZIP에 포함하지 않았다. 기존 프로젝트의 해당 폴더를 그대로 사용한다. 장치 목록과 월드 실제 배치는 사용자 PC에서 확인해야 한다.
@@ -93,6 +93,8 @@ python -m pip install -r requirements.txt
 
 현재 A의 자이로/컴패스와 D의 GT 진단은 XY 평면, z-up 기준이다. 월드가 다르면 A와 좌표축을 맞춰야 한다. 월드 translation을 START_X/Y에 그대로 복사할 필요는 없다. 라이다 왼쪽/오른쪽이 반대로 찍히는 문제는 A의 LIDAR_ANGLE_SIGN 확인 대상이다.
 
+새 [A] 코드는 시작 위치추정에 더해 scan-to-map 보정과 스캔 삽입 간격 제어를 추가했다. `config.py`의 `LIDAR_OFFSET_X`는 로봇 중심에서 LiDAR 원점까지의 전방 거리다. 기본 0.0은 안전한 초기값일 뿐, 월드에서 센서가 중심에서 떨어져 있으면 실제 모델을 확인해 조정해야 한다. `LIDAR_HALF_BEAM`은 360도 스캔 빔의 각도 중심을 반 칸 보정한다. scan matching은 OpenCV가 있을 때만 실행되며, 점수/검색창/주기는 실제 지도와 CPU 사용량을 보고 조정할 값이다.
+
 LiDAR의 +inf는 측정 범위 안에 반사점이 없다는 값으로 유지한다. 0/음수는 무효 빔으로 제외하며 모든 빔이 무효면 오류 정지한다. 일부 NaN/무효 영역의 충돌 회피 정책은 B가 검토해야 한다. 이 검사는 센서 전체의 정상 여부를 보증하지 않는다.
 
 ## 6. 검증 결과와 실제 주행 확인
@@ -119,3 +121,24 @@ python -m compileall -q controllers tests
 7. 같은 월드를 시작 상태로 초기화하여 2~3회 성공한 뒤 good-1 태그 지정.
 
 고정 RETURN_MARGIN_S는 복귀 시간을 예약하는 기준이며 실제 귀환을 보장하지 않는다. 복귀 경로가 계속 막히면 정지 재계획을 반복하다 TIMEOUT으로 끝난다. 지도의 미지 영역 처리, A* 모서리 통과, 로컬 회피 성능은 원본 B 코드 동작을 따른다.
+
+
+## 7. 최신 B / C 통합
+
+- 최신 B는 사용자가 올린 마크다운 코드의 전송용 escape와 NBSP 공백을 복원한 버전이다. 알고리즘은 변경하지 않았다. config에 추가된 B 공용 상수와 SAFE_DIST = INFLATE_MIN_M을 반영했다.
+- D는 B 후진 중 재계획을 보류하고, 빈 경로라도 후진을 계속 호출한다. GOTO_GIVEUP_S=15초, frontier 도착 기준은 nav.ARRIVE_R이다.
+- C perception.py는 업로드 파일과 바이트 단위로 동일하다. Perception(camera), grab(), detect(), localize(), TargetBook.add()/confirmed(), draw() 인터페이스는 기존 D 호출과 호환된다.
+- C는 YOLO를 CPU에서 실행하여 빨간 사과만 검출한다. DETECTOR='color' 또는 TARGET_COLORS를 바꿔도 C 구현은 색상 단독 검출이나 초록 사과 검출로 전환되지 않는다. 설정 표시를 DETECTOR='yolo'로 맞췄다.
+- numpy, opencv-python, ultralytics가 필수이므로 python -m pip install -r requirements.txt로 설치한다.
+- YOLO_MODEL은 config.py 위치 기준 프로젝트의 models/YOLO/yolo11n.pt를 가리키는 절대 경로이다. 실행 폴더가 달라도 같은 파일을 사용한다. 이 ZIP에는 모델 가중치가 포함되지 않는다. 기존 모델 파일을 해당 위치에 둔다.
+- D는 검출기 의존성 누락 시 설치 명령을 안내하며 시작 로그에 모델 경로를 출력한다.
+- 24개 테스트 통과. 실제 C의 빨간 사과 필터, 위치 변환, 중복 관측 확정, 그리기와 D의 B 후진 연결 포함. YOLO 추론은 테스트 더블로 대체했으므로 실제 모델 정확도와 Webots 임무 성공은 검증하지 않았다.
+
+로컬 적용 후:
+
+```powershell
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
+
+기존 config에서 현장 조정한 장치 이름, 시작 위치, 대상 수, 제한 시간, 카메라 높이는 실제 환경에 맞춰 유지한다. C의 현재 대상은 빨간 사과이다.

@@ -2,14 +2,13 @@
 [A] 위치 추정 + 지도
  - main은 Slam.update()를 매 step 부르고, .pose와 .grid만 읽는다.
  - 강의의 SLAM 한 tick = Prediction → Scan-to-Map Update → Mapping
-   1) Prediction : 엔코더 이동거리 + 자이로 회전량, compass 상보 필터로 헤딩 드리프트 제거
-   2) Update     : scan-to-map 상관 매칭(likelihood field)으로 x, y 보정 (compass가 없으면 yaw도)
+   1) Prediction : 엔코더 이동거리 + 자이로 회전량 (정지 중 자이로 bias 추정)
+   2) Update     : scan-to-map 상관 매칭(likelihood field)으로 x, y, yaw 보정 (자이로 드리프트 제거)
    3) Mapping    : 보정된 자세로 log-odds occupancy grid 갱신 (cv2.fillPoly 광선 투사)
 """
 import math
 import numpy as np
 from config import (WHEEL_RADIUS, AXLE_LENGTH, MAP_SIZE_M, RES,
-                    USE_COMPASS, COMPASS_SIGN, COMPASS_GAIN, COMPASS_GATE_DEG,
                     LIDAR_OFFSET_X, LIDAR_HALF_BEAM, SCAN_SKIP_S,
                     L_FREE, L_OCC, L_MIN, L_MAX, FREE_INF_RANGE,
                     MAP_INSERT_DIST, MAP_INSERT_ANG_DEG, MAP_INSERT_S,
@@ -36,15 +35,6 @@ def wrap(a):
     return (a + math.pi) % (2 * math.pi) - math.pi
 
 
-def _circ_mean(a):
-    return math.atan2(float(np.mean(np.sin(a))), float(np.mean(np.cos(a))))
-
-
-def _circ_std(a):
-    r = math.hypot(float(np.mean(np.sin(a))), float(np.mean(np.cos(a))))
-    return math.sqrt(max(-2.0 * math.log(min(max(r, 1e-12), 1.0)), 0.0)) + 0.0
-
-
 def _bilinear(img, u, v):
     """img[v, u]를 이중선형 보간 (범위 밖은 0)"""
     h, w = img.shape
@@ -60,7 +50,7 @@ def _bilinear(img, u, v):
 
 # ------------------------- Odometry -------------------------
 class Odometry:
-    """이동거리는 엔코더, 회전량은 밖에서 받음 (자이로/compass). 중점 적분"""
+    """이동거리는 엔코더, 회전량은 밖에서 받음 (자이로). 중점 적분"""
 
     def __init__(self, x, y, yaw):
         self.x, self.y, self.yaw = float(x), float(y), float(yaw)
@@ -296,18 +286,14 @@ class Slam:
         self.t = 0.0
         self.moved = False                  # 시작 후 한 번이라도 움직였는지 (그 전 = 센서 보정 구간)
         self.gyro_bias = 0.0
-        self.compass_off = None
-        self.compass_gain = COMPASS_GAIN
-        self.compass_noisy = False          # 정지 중 compass 흔들림이 크면 True → 매칭이 yaw도 보정
-        self._g_samples, self._c_samples = [], []
-        self._gate_n = 0
+        self._g_samples = []
         self._ang_key, self._ang = None, None
         self._prev_ranges = None
         self._last_insert = None
         self._sm_t = -1e9
         self._edge_n = 0
         self.trail = []                     # 지나온 자세 (5 cm 간격) — 시각화용
-        self.stats = dict(heading="-", compass="off", gyro_bias=0.0, compass_std_deg=None,
+        self.stats = dict(heading="-", gyro_bias=0.0,
                           sm_ok=0, sm_rej=0, sm_skip=0, sm_score=0.0, sm_last=(0.0, 0.0, 0.0),
                           sm_reason="", inserts=0)
 
@@ -316,14 +302,6 @@ class Slam:
         return self.odom.x, self.odom.y, self.odom.yaw
 
     # ---------- 센서 전처리 ----------
-    def _compass_yaw(self, compass):
-        if not USE_COMPASS or compass is None or len(compass) < 2:
-            return None
-        cx, cy = compass[0], compass[1]
-        if not (math.isfinite(cx) and math.isfinite(cy)) or math.hypot(cx, cy) < 1e-6:
-            return None
-        return COMPASS_SIGN * math.atan2(cx, cy)
-
     def _fix_angles(self, angles):
         """main의 angles = fov/2 - i·Δ 이면 반 칸 보정 (Webots 실제 빔 각도 = fov/2 - (i+0.5)·Δ)"""
         key = (angles.size, float(angles[0]), float(angles[-1]))
@@ -339,57 +317,34 @@ class Slam:
         return self._ang
 
     # ---------- 매 step ----------
-    def update(self, enc_l, enc_r, gyro_z, compass, ranges, angles, max_range, dt):
+    def update(self, enc_l, enc_r, gyro_z, _unused, ranges, angles, max_range, dt):
         self.t += dt
         o = self.odom
         wh = o.wheels(enc_l, enc_r)
         gz = gyro_z if (gyro_z is not None and math.isfinite(gyro_z)) else None
-        cy = self._compass_yaw(compass)
 
-        # ---- 시작 정지 구간: 자이로 bias, compass 오프셋/노이즈 추정 ----
+        # ---- 자이로 bias: 시작 후 처음 움직이기 전까지 평균, 그 뒤에는 바퀴가 멈춰 있을 때만 천천히 갱신 ----
         if wh is not None and (abs(wh[0]) > 1e-4 or abs(wh[1]) > 1e-3):
             if not self.moved:
                 self.moved = True
                 self._on_start_moving()
-        if not self.moved:
-            if gz is not None:
+        if gz is not None:
+            if not self.moved:
                 self._g_samples.append(gz)
                 self.gyro_bias = float(np.mean(self._g_samples[-200:]))
-            if cy is not None:
-                self._c_samples.append(cy)
-                # 시작 heading(START_YAW)에 compass를 맞춤 → 월드 좌표계/북쪽 방향이 달라도 동작
-                self.compass_off = wrap(self.start[2] - _circ_mean(self._c_samples[-200:]))
-        elif cy is not None and self.compass_off is None:
-            self.compass_off = wrap(o.yaw - cy)
-        c_yaw = wrap(cy + self.compass_off) if (cy is not None and self.compass_off is not None) else None
+            elif wh is not None and abs(wh[0]) < 1e-6 and abs(wh[1]) < 1e-5:
+                self.gyro_bias += 0.02 * (gz - self.gyro_bias)
 
-        # ---- 1) Prediction: 거리 = 엔코더, 회전 = 자이로 > compass > 엔코더 ----
+        # ---- 1) Prediction: 거리 = 엔코더, 회전 = 자이로 (없으면 엔코더) ----
         if wh is not None:
             d, dth_enc = wh
             if gz is not None:
                 # Webots 자이로 값 = 그 step 끝의 각속도. 모터 명령이 즉시 반영되므로 직사각형 적분이 실측과 가장 잘 맞음
                 dth, src = (gz - self.gyro_bias) * dt, "gyro"
-            elif c_yaw is not None:
-                dth, src = wrap(c_yaw - o.yaw), "compass"
             else:
                 dth, src = dth_enc, "encoder"
             o.advance(d, dth)
-            self.stats["heading"] = src + ("+compass" if (src == "gyro" and c_yaw is not None) else "")
-
-        # compass 상보 필터 (PI): 자이로 적분 헤딩을 절대 heading 쪽으로 당기고(P),
-        # 남는 오차로 자이로 bias를 계속 추정(I, 임계 감쇠 ki = gain²/(4·dt)) → 주행 중 생기는 bias도 제거
-        if c_yaw is not None and gz is not None:
-            err = wrap(c_yaw - o.yaw)
-            if abs(err) < math.radians(COMPASS_GATE_DEG) or self._gate_n * dt > 3.0:
-                o.yaw = wrap(o.yaw + self.compass_gain * err)
-                if self.moved and dt > 0:
-                    ki = self.compass_gain ** 2 / (4.0 * dt)
-                    self.gyro_bias = min(max(self.gyro_bias - ki * err, -0.05), 0.05)
-                self._gate_n = 0
-            else:
-                self._gate_n += 1                           # 순간적인 교란은 무시
-        elif gz is not None and self.moved and wh is not None and abs(wh[0]) < 1e-6 and abs(wh[1]) < 1e-5:
-            self.gyro_bias += 0.02 * (gz - self.gyro_bias)  # compass 없음: 바퀴가 멈춰 있을 때만 bias 갱신
+            self.stats["heading"] = src
 
         # ---- LiDAR ----
         rng = np.asarray(ranges, dtype=float)
@@ -404,12 +359,8 @@ class Slam:
             # ---- 2) Update: scan-to-map 매칭 ----
             if USE_SCAN_MATCH and cv2 is not None and self.t - self._sm_t >= 1.0 / SCAN_MATCH_HZ:
                 self._sm_t = self.t
-                if c_yaw is not None and not self.compass_noisy:
-                    yaw_win = 0.0                           # compass가 헤딩을 잡아주면 x, y만
-                elif gz is not None:
-                    yaw_win = math.radians(SM_YAW_WIN_DEG)
-                else:
-                    yaw_win = math.radians(max(SM_YAW_WIN_DEG, 5.0))
+                # 헤딩 드리프트도 매칭으로 잡음: 자이로가 있으면 ±SM_YAW_WIN_DEG, 엔코더 회전이면 ±5°
+                yaw_win = math.radians(SM_YAW_WIN_DEG if gz is not None else max(SM_YAW_WIN_DEG, 5.0))
                 self._scan_match(rng, ang, max_range, yaw_win)
             # ---- 3) Mapping ----
             if self._insert_due():
@@ -486,19 +437,11 @@ class Slam:
         st["sm_reason"] = "ok" if good.all() else "ok (1 axis)"
 
     def _on_start_moving(self):
-        """처음 움직이기 시작할 때 정지 구간에서 모은 센서 통계 확정"""
-        st = self.stats
-        st["gyro_bias"] = self.gyro_bias
-        if len(self._c_samples) >= 8:
-            sd = math.degrees(_circ_std(np.array(self._c_samples[-200:])))
-            st["compass_std_deg"] = sd
-            if sd > 1.5:                                    # 당일 로봇 compass에 노이즈가 있으면 덜 믿음
-                self.compass_gain = COMPASS_GAIN * 0.2
-                self.compass_noisy = True
-        st["compass"] = "on (gain %.3f)" % self.compass_gain if self.compass_off is not None else "off"
-        print("[SLAM] 센서 보정: gyro bias %.2e rad/s, compass %s%s"
-              % (self.gyro_bias, st["compass"],
-                 "" if st["compass_std_deg"] is None else ", 정지 중 std %.2f deg" % st["compass_std_deg"]))
+        """처음 움직이기 시작할 때 정지 구간에서 모은 자이로 bias 확정"""
+        self.stats["gyro_bias"] = self.gyro_bias
+        sd = float(np.std(self._g_samples)) if len(self._g_samples) >= 8 else 0.0
+        print("[SLAM] 센서 보정: gyro bias %.2e rad/s (정지 중 %d개, std %.2e)"
+              % (self.gyro_bias, len(self._g_samples), sd))
 
     def status(self):
         """시각화/로그용 한 줄 요약"""

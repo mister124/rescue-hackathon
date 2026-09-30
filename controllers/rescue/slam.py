@@ -23,6 +23,10 @@ except ImportError:          # cv2가 없으면 느린 광선 투사로 대체, 
 MATCH_OCC_T = 1.2            # 이 log-odds 이상(2번 이상 맞은 칸)만 매칭 기준으로 사용
 DYN_FREE_T = -1.5            # 여러 번 빈칸이었던 곳에 새로 찍힌 점 = 움직이는 물체일 가능성
 DYN_HIT_SCALE = 0.35         # 그런 점은 장애물 가중치를 줄여서 반영 (보행자 자국 방지)
+GHOST_FREE_T = -1.0          # 확실한 빈칸(log-odds < 이 값)에 찍히고
+GHOST_DIST = 0.15            # 기존 장애물에서 이만큼 [m] 넘게 떨어진 점은 보행자로 보고 장애물로 안 넣음
+GHOST_PROTECT = 2            # 단, 이미 이만큼 맞은 칸(얇은 다리 등)은 보호
+CONTACT_R = 0.25             # inf 구간 양 끝 빔이 이보다 가까우면 = 0.12 m 안쪽에 붙은 물체 → 그 구간은 비우지 않음
 ROBOT_CLEAR_R = 0.12         # 로봇이 서 있는 자리는 빈칸 [m]
 SM_SIGMA = 0.05              # likelihood field 폭 [m]
 SM_LUT_HALF = 4.5            # likelihood field 범위 ±[m] (LiDAR 최대 3.5 m + 여유)
@@ -35,17 +39,34 @@ def wrap(a):
     return (a + math.pi) % (2 * math.pi) - math.pi
 
 
-def _bilinear(img, u, v):
-    """img[v, u]를 이중선형 보간 (범위 밖은 0)"""
+def _axis_w(q, g, n):
+    """한 축의 이중선형 가중치: 점 p를 g[i]칸 옮긴 좌표가 블록 칸 idx[p, :]에 주는 가중치 W[p, i, :]"""
+    Q = q[:, None] + g[None, :]
+    q0 = np.floor(Q)
+    f = Q - q0
+    ok = (q0 >= 0) & (q0 < n - 1)                   # 범위 밖 샘플 = 0
+    b = q0[:, 0]                                    # g가 오름차순 → 첫 열이 블록 시작
+    k = (q0 - b[:, None]).astype(np.intp)
+    K = int(k[:, -1].max()) + 2
+    P, G = Q.shape
+    W = np.zeros((P, G, K))
+    base = (np.arange(P * G) * K).reshape(P, G) + k
+    W.reshape(-1)[base] = (1.0 - f) * ok
+    W.reshape(-1)[base + 1] = f * ok
+    idx = np.clip(b[:, None] + np.arange(K), 0, n - 1).astype(np.intp)
+    return W, idx
+
+
+def _grid_scores(img, u, v, gu, gv):
+    """점 (u, v)를 (gu[i], gv[j])칸 옮겼을 때 img 이중선형 보간의 평균 → [j, i] (범위 밖 = 0).
+    오프셋이 격자라서 점마다 작은 블록만 읽고 행렬곱으로 계산 (오프셋마다 보간하는 것과 같은 값, 3~4배 빠름)"""
     h, w = img.shape
-    ok = (u >= 0) & (v >= 0) & (u < w - 1) & (v < h - 1)
-    u = np.clip(u, 0, w - 1.001)
-    v = np.clip(v, 0, h - 1.001)
-    u0, v0 = u.astype(np.int32), v.astype(np.int32)
-    fu, fv = u - u0, v - v0
-    val = (img[v0, u0] * (1 - fu) * (1 - fv) + img[v0, u0 + 1] * fu * (1 - fv)
-           + img[v0 + 1, u0] * (1 - fu) * fv + img[v0 + 1, u0 + 1] * fu * fv)
-    return np.where(ok, val, 0.0)
+    Wu, cu = _axis_w(u, np.asarray(gu, float), w)
+    Wv, cv = _axis_w(v, np.asarray(gv, float), h)
+    blk = img[cv[:, :, None], cu[:, None, :]]           # (점, Kv, Ku)
+    t = np.matmul(Wv, blk)                              # (점, len(gv), Ku)
+    P, nv, Ku = t.shape
+    return t.transpose(1, 0, 2).reshape(nv, P * Ku) @ Wu.transpose(0, 2, 1).reshape(P * Ku, -1) / P
 
 
 # ------------------------- Odometry -------------------------
@@ -88,12 +109,14 @@ class GridMap:
 
     def __init__(self, cx, cy):
         self.n = int(round(MAP_SIZE_M / RES))
-        self.ox, self.oy = cx - MAP_SIZE_M / 2, cy - MAP_SIZE_M / 2
+        self.ox, self.oy = cx - MAP_SIZE_M / 4, cy - MAP_SIZE_M / 2   # 지도 중심 = 시작점에서 오른쪽(+x)으로 한 변/4
         self.lo = np.zeros((self.n, self.n), np.float32)   # log-odds (0 = 모름)
         self.obs = np.zeros((self.n, self.n), bool)
         self.lut = None                                      # scan matching용 likelihood field
         self.lut_org = (0, 0)                                # lut[0, 0]의 (row, col)
         self.lut_occ = 0
+        self.lut_d = None                                    # likelihood field 창의 장애물까지 거리 [m]
+        self.hn = np.zeros((self.n, self.n), np.int32)       # 칸별로 장애물로 반영된 히트 수
 
     def w2c(self, x, y):
         return int(math.floor((y - self.oy) / RES)), int(math.floor((x - self.ox) / RES))   # (row, col)
@@ -124,6 +147,13 @@ class GridMap:
         amb = near.copy()
         for k in (-2, -1, 1, 2):
             amb |= np.roll(near, k)
+        # 벽·문틀에 붙으면 앞쪽 빔이 전부 inf → 3 m씩 비우면 붙은 물체와 그 뒤 벽까지 지워짐
+        ret = np.flatnonzero(fin)
+        if 0 < len(ret) < len(r):
+            gap = (np.roll(ret, -1) - ret) % len(r)
+            for a0, g in zip(ret[gap > 1], gap[gap > 1]):
+                if r[a0] < CONTACT_R or r[(a0 + g) % len(r)] < CONTACT_R:
+                    amb[(a0 + 1 + np.arange(g - 1)) % len(r)] = True
         free_len = np.zeros_like(r)
         free_len[hit] = np.maximum(r[hit] - 1.5 * RES, 0.0)     # 끝점 바로 앞까지만 비움 (얇은 다리 보호)
         free_len[nohit & ~amb] = min(FREE_INF_RANGE, max_range)
@@ -136,8 +166,19 @@ class GridMap:
         hr = np.floor((y + r[hit] * sa[hit] - self.oy) / RES).astype(np.int64) - r0
         hc = np.floor((x + r[hit] * ca[hit] - self.ox) / RES).astype(np.int64) - c0
         ok = (hr >= 0) & (hr < H) & (hc >= 0) & (hc < W)
+        hr, hc = hr[ok], hc[ok]
+        lo = self.lo[r0:r1, c0:c1]
+        hn = self.hn[r0:r1, c0:c1]
+        if self.lut_d is not None and len(hr):
+            # 확실한 빈칸 + 기존 장애물에서 먼 점 = 보행자 → 장애물로 넣지 않음 (그 빔의 빈 공간은 그대로 반영)
+            lr, lc = hr + r0 - self.lut_org[0], hc + c0 - self.lut_org[1]
+            inl = (lr >= 0) & (lr < self.lut_d.shape[0]) & (lc >= 0) & (lc < self.lut_d.shape[1])
+            dist = np.full(len(hr), 9.0, np.float32)
+            dist[inl] = self.lut_d[lr[inl], lc[inl]]
+            keep = ~((lo[hr, hc] < GHOST_FREE_T) & (dist > GHOST_DIST) & (hn[hr, hc] < GHOST_PROTECT))
+            hr, hc = hr[keep], hc[keep]
         hitm = np.zeros((H, W), bool)
-        hitm[hr[ok], hc[ok]] = True
+        hitm[hr, hc] = True
 
         if cv2 is not None:
             # 빔 끝점들로 만든 별 모양 다각형 = 이번 스캔에서 비어 있음이 확인된 영역
@@ -165,8 +206,9 @@ class GridMap:
             near_hit[:, :-1] |= hitm[:, 1:]
 
         free = seen & ~near_hit                     # 한 칸에 한 스캔당 한 번만 갱신 (np.add.at 중복 누적 방지)
-        lo = self.lo[r0:r1, c0:c1]
         dyn = hitm & (lo < DYN_FREE_T)              # 늘 비어 있던 곳에 새로 생긴 점 → 보행자일 가능성
+        stat = ~dyn[hr, hc]
+        np.add.at(hn, (hr[stat], hc[stat]), 1)
         lo[free] += L_FREE
         lo[hitm & ~dyn] += L_OCC
         lo[dyn] += L_OCC * DYN_HIT_SCALE
@@ -198,6 +240,7 @@ class GridMap:
     def build_likelihood(self, x, y):
         """(x, y) 주변 확실한 장애물 칸으로부터의 거리 d → exp(-d²/2σ²)"""
         self.lut = None
+        self.lut_d = None
         if cv2 is None:
             return
         r0, r1, c0, c1 = self._window(x, y, SM_LUT_HALF)
@@ -207,6 +250,7 @@ class GridMap:
             return
         d = cv2.distanceTransform((~occ).astype(np.uint8), cv2.DIST_L2, 5) * RES
         self.lut = np.exp(-(d * d) / (2 * SM_SIGMA ** 2)).astype(np.float32)
+        self.lut_d = d
         self.lut_org = (r0, c0)
 
     def match(self, pose, ranges, angles, max_range, yaw_win, win=SM_WIN, step=0.02):
@@ -214,6 +258,8 @@ class GridMap:
         반환 dict(dx, dy, dth, score, s0, edge, cov) 또는 건너뛴 이유(str)"""
         if self.lut is None:
             return "no map"
+        if not all(math.isfinite(q) for q in pose):
+            return "bad pose"
         r = np.asarray(ranges, dtype=float)
         fin = np.isfinite(r) & (r > 0.15) & (r < max_range - 0.1)
         n_fin = int(fin.sum())
@@ -236,19 +282,20 @@ class GridMap:
             v = (y + s * px + c * py - self.oy) / RES - 0.5 - r0
             return u, v
 
-        def scores(u, v, DX, DY):
-            sc = _bilinear(lut, u[None, :] + DX[:, None] / RES, v[None, :] + DY[:, None] / RES).mean(1)
+        def scores(u, v, gx, gy):
+            DX, DY = [q.ravel() for q in np.meshgrid(gx, gy)]
+            sc = _grid_scores(lut, u, v, gx / RES, gy / RES).ravel()
             return sc - 0.02 * (DX ** 2 + DY ** 2) / win ** 2        # 예측(오도메트리) 근처를 약하게 선호
 
         u0, v0 = to_uv(0.0)
-        s0 = float(_bilinear(lut, u0, v0).mean())
+        s0 = float(_grid_scores(lut, u0, v0, [0.0], [0.0])[0, 0])
         g = np.arange(-win, win + 1e-9, step)
         DX, DY = [q.ravel() for q in np.meshgrid(g, g)]
         yaws = [0.0] if yaw_win <= 0 else list(np.arange(-yaw_win, yaw_win + 1e-9, math.radians(1.0)))
         best = None
         for dth in yaws:
             u, v = to_uv(dth)
-            sc = scores(u, v, DX, DY)
+            sc = scores(u, v, g, g)
             k = int(np.argmax(sc))
             if best is None or sc[k] > best[0]:
                 best = (float(sc[k]), dth, k, sc)
@@ -261,13 +308,13 @@ class GridMap:
                         [(p * (DX - mx) * (DY - my)).sum(), (p * (DY - my) ** 2).sum()]])
         # 정밀 탐색
         f = np.arange(-step, step + 1e-9, 0.005)
-        FX, FY = [q.ravel() for q in np.meshgrid(f, f)]
-        FX, FY = FX + DX[bk], FY + DY[bk]
+        fx, fy = f + DX[bk], f + DY[bk]
+        FX, FY = [q.ravel() for q in np.meshgrid(fx, fy)]
         fyaws = [bth] if yaw_win <= 0 else [bth + d for d in np.radians([-0.5, -0.25, 0.0, 0.25, 0.5])]
         fbest = None
         for dth in fyaws:
             u, v = to_uv(dth)
-            sc = scores(u, v, FX, FY)
+            sc = scores(u, v, fx, fy)
             k = int(np.argmax(sc))
             if fbest is None or sc[k] > fbest[0]:
                 fbest = (float(sc[k]), dth, float(FX[k]), float(FY[k]))

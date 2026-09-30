@@ -10,7 +10,11 @@ from collections import deque
 import numpy as np
 import cv2
 from config import (RES, INFLATE_M, INFLATE_MIN_M, ROBOT_RADIUS, V_MAX, W_MAX,
-                    SAFE_DIST, LOOKAHEAD, STUCK_S, GOAL_TOL)
+                    SAFE_DIST, LOOKAHEAD, STUCK_S, GOAL_TOL,
+                    MIN_FRONTIER_CELLS, COMMIT_R, TURN_W, ARRIVE_R,
+                    NO_GO_R, NO_GO_TTL, CENTER_M, CENTER_W,
+                    W_HEAD, W_CLEAR, W_VEL, W_PROG,
+                    BACKUP_V, BACKUP_S, SPIN_MOVE, SPIN_TURN)
 
 
 # ------------------------- Costmap -------------------------
@@ -48,11 +52,7 @@ def find_frontiers(occ, blocked):
             cnt += np.roll(fr, (dr, dc), axis=(0, 1))
     return np.argwhere(fr & (cnt >= 3))
 
-MIN_FRONTIER_CELLS = 5          # 이보다 작은 frontier 덩어리는 잡음(가구 밑 틈 등)으로 보고 무시
-
 NO_GO = []                      # 막혔던 위치 (x, y, 등록 시각). 경로 계획과 frontier 선택에서 장애물로 취급
-NO_GO_R = 0.25                  # 진입 금지 반경 [m] (크면 옆 통로까지 막아 우회 못 함)
-NO_GO_TTL = 60.0                # 진입 금지 유지 시간 [s] (보행자 때문에 막힌 문이 영원히 닫히지 않게)
 
 def with_no_go(grid, blocks):
     """blocks에 진입 금지 구역(NO_GO)을 원으로 칠한 사본
@@ -91,9 +91,6 @@ def pick_frontier(grid, occ, blocks, pose, blacklist):
 
 
 _dumps = [0]
-COMMIT_R = 0.8                  # 가던 목표에서 이 거리 안에 frontier가 남아 있으면 계속 그쪽으로
-TURN_W = 0.5                    # 새 목표를 고를 때 돌아야 하는 각도 1 rad당 0.5m 먼 것으로 침
-ARRIVE_R = 0.6                  # 이보다 가까운 frontier는 목표로 안 고름, 가던 목표도 여기서 완료
 _cur = [None]                   # 지금 가고 있는 frontier 목표
 
 
@@ -147,10 +144,6 @@ def _pick(grid, occ, blocks, pose, walls):
 # ------------------------- A* -------------------------
 MOVES = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
          (1, 1, 1.414), (1, -1, 1.414), (-1, 1, 1.414), (-1, -1, 1.414)]
-
-CENTER_M = 0.3                  # 막힌 칸에서 이 거리 안쪽은 가까울수록 이동 비용 증가 [m]
-CENTER_W = 4.0                  # 막힌 칸 바로 옆 칸의 비용 = 기본 × (1 + CENTER_W)
-
 
 def wall_penalty(blocked):
     """칸마다 0~1: 막힌 칸에 가까울수록 1. A*가 문·복도 한가운데로 지나가게 함
@@ -275,10 +268,6 @@ def plan(grid, blocks, pose, goal, walls=None):
 
 
 # ------------------------- DWA -------------------------
-W_HEAD = 1.0                    # 궤적 끝에서 목표를 바라보는 정도
-W_CLEAR = 0.5                   # 장애물까지 여유 (1m에서 상한)
-W_VEL = 0.3                     # 빠를수록
-W_PROG = 0.0                    # 궤적 끝이 목표에 실제로 가까워진 정도
 V_SAMPLES = np.linspace(0.0, V_MAX, 6)
 W_SAMPLES = np.linspace(-W_MAX, W_MAX, 13)
 SIM_T = np.linspace(0.1, 1.2, 10)
@@ -318,11 +307,6 @@ def dwa(goal_local, obs_pts):
 
 
 # ------------------------- 경로 추종 -------------------------
-BACKUP_V, BACKUP_S = -0.08, 3.0  # 막혔을 때 후진 속도 [m/s], 시간 [s]
-SPIN_MOVE = 0.3                  # 이 거리도 못 벗어나면서
-SPIN_TURN = 2 * math.pi          # 이만큼 누적 회전하면 "빙빙 돎" → 막힘과 같이 처리
-
-
 def rear_clear(ranges, angles):
     """로봇 뒤쪽(±30도)에 후진할 공간이 있는지"""
     r = ranges[np.abs(angles) > math.radians(150)]

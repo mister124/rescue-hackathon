@@ -2,6 +2,7 @@
 공용 설정. 각자 자기 구역만 수정할 것.
 당일: 장치 이름, 시작 위치, 대상 색, 대상 수, 제한 시간부터 채운다.
 """
+import math
 import os
 
 # ============================ [D] 미션 / 장치 ============================
@@ -72,6 +73,27 @@ SAFE_DIST = INFLATE_MIN_M        # DWA 최소 허용 거리 (경로 계획의 �
 LOOKAHEAD = 0.5                  # look-ahead 거리 [m]
 STUCK_S = 8.0                    # 이 시간 동안 0.1m도 못 가면 목표 포기
 SEARCH_SPIN_W = 0.5              # 갈 곳이 없을 때 제자리 회전 속도
+
+# Frontier 선택 / 재계획
+MIN_FRONTIER_CELLS = 5           # 이보다 작은 frontier 덩어리는 잡음으로 무시
+COMMIT_R = 0.8                    # 기존 frontier 목표를 유지할 반경 [m]
+TURN_W = 0.5                     # 새 목표 선택 시 회전량 비용 [m/rad]
+ARRIVE_R = 0.6                   # frontier 도착 처리 거리 [m]
+NO_GO_R = 0.25                   # 막힌 위치 주변 진입 금지 반경 [m] (옆 통로 우회 허용)
+NO_GO_TTL = 60.0                 # 진입 금지 유지 시간 [s]
+
+# 전역 경로 / DWA 비용 가중치
+CENTER_M = 0.3                   # 벽 근접 비용을 적용할 거리 [m]
+CENTER_W = 4.0                   # 벽 바로 옆 경로의 추가 비용 가중치
+W_HEAD = 1.0                     # DWA 목표 방향 점수
+W_CLEAR = 0.5                    # DWA 장애물 여유 점수
+W_VEL = 0.3                      # DWA 전진 속도 점수
+W_PROG = 0.0                     # DWA 목표 접근 점수
+
+# 막힘 복구
+BACKUP_V, BACKUP_S = -0.08, 3.0  # 후진 속도 [m/s], 지속 시간 [s]
+SPIN_MOVE = 0.3                  # 제자리 회전으로 판단할 이동 반경 [m]
+SPIN_TURN = 2 * math.pi          # 막힘으로 판단할 누적 회전량 [rad]
 
 # ============================ [C] 대상 검출 ============================
 DETECTOR = "color"               # "color" 또는 "yolo"

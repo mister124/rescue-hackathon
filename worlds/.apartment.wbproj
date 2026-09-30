@@ -1,0 +1,16 @@
+Webots Project File version R2025a
+perspectives: 000000ff00000000fd00000002000000010000015600000387fc0200000001fb0000001400540065007800740045006400690074006f00720100000013000003870000003f00ffffff0000000300000780000000c2fc0100000001fb0000001a0043006f006e0073006f006c00650041006c006c0041006c006c0100000000000007800000006900ffffff000006280000038700000001000000020000000100000008fc00000000
+simulationViewPerspectives: 000000ff0000000100000002000001070000035e0100000002010000000100
+sceneTreePerspectives: 000000ff00000001000000030000001c000000c0000000fa0100000002010000000200
+maximizedDockId: -1
+centralWidgetVisible: 1
+orthographicViewHeight: 1
+textFiles: -1
+globalOptionalRendering: LidarPointClouds
+consoles: Console:All:All
+renderingDevicePerspectives: TurtleBot3Burger:Camera YOLO;1;0.5;0.02;0.45
+renderingDevicePerspectives: TurtleBot3Burger:Global Map;1;0.553333;0.524027;0.0249112
+renderingDevicePerspectives: TurtleBot3Burger:Lidar Point Cloud;1;0.961111;0.620138;0.449585
+renderingDevicePerspectives: TurtleBot3Burger:camera;0;0.325;0.647317;0.5
+renderingDevicePerspectives: laptop:display;0;0.346774;0;0
+renderingDevicePerspectives: television:display;0;1;0;0

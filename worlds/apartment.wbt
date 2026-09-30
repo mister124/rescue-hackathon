@@ -955,11 +955,12 @@ TurtleBot3Burger {
       height 360
     }
     Display {
-      name "Camera"
+      name "Camera YOLO"
       width 640
       height 480
     }
     Camera {
+      name "camera"
       translation 0.05 0 -0.08
       fieldOfView 1.0472
       width 640

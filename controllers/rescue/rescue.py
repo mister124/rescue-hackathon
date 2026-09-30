@@ -316,7 +316,10 @@ def main():
         windows = False
     try:
         devices = list_devices(robot)
-        map_display, camera_display = devices.get("Global Map"), devices.get("Camera")
+        map_display = devices.get("Global Map")
+        camera_display = require(devices, "Camera YOLO", "카메라 결과 Display")
+        if not hasattr(camera_display, "imagePaste"):
+            raise RuntimeError("Camera YOLO는 Camera 센서가 아닌 Display 노드여야 합니다")
         lidar_display = devices.get("Lidar Point Cloud")
         if map_display is not None and camera_display is not None:
             windows = False
@@ -356,7 +359,7 @@ def main():
             camera.enable(ts)
             if camera_display is not None:
                 camera_display.attachCamera(camera)
-                print("[DISPLAY] Camera connected")
+                print("[DISPLAY] camera -> Camera YOLO connected")
             else:
                 print("[WARN] Camera Display 없음: apartment.wbt를 다시 로드하세요")
         else:
@@ -493,9 +496,6 @@ def main():
                             draw_lidar(lidar_display, ranges, angles, max_range)
                         if map_display is not None or windows:
                             draw_map(slam.grid, slam.grid.occupancy(), pose, mission.path, book.confirmed(), mission.goal, status, map_display)
-                        if frame is not None:
-                            if camera_display is None and windows:
-                                cv2.imshow("camera", view)
                     if windows and (cv2.waitKey(1) & 0xFF) == ord("s") and frame is not None:
                         filename = Path(__file__).resolve().parent / "frame.jpg"
                         print("[SAVE] frame.jpg" if cv2.imwrite(str(filename), frame) else "[WARN] frame.jpg 저장 실패")

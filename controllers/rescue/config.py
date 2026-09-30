@@ -42,6 +42,11 @@ TARGET_RETRY_S = 20.0  # 실패한 대상 재시도 전 대기
 TARGET_MAX_ATTEMPTS = 2  # 같은 대상 최대 접근 횟수
 STATUS_EVERY_S = 5.0  # 콘솔 상태 출력 주기
 
+# 최종 모터 출력 전 장애물 검사
+D_STOP_DIST = 0.35  # 로봇 중심 기준 진행 방향 정지 거리 [m]
+D_SIDE_MARGIN = 0.05  # 이동 영역 양옆 여유 [m]
+D_ROTATE_MARGIN = 0.05  # 회전 시 몸체 주변 여유 [m]
+
 # ============================ [A] 위치 / 지도 ============================
 WHEEL_RADIUS = 0.033  # 바퀴 반지름 [m]
 AXLE_LENGTH = (

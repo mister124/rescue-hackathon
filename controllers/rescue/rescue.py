@@ -235,7 +235,16 @@ def require(devices, name, what):
     return dev
 
 
-def draw_map(grid, occ, pose, path, targets, goal, status):
+def paste_display(display, frame):
+    rgb = cv2.cvtColor(cv2.resize(frame, (display.getWidth(), display.getHeight())), cv2.COLOR_BGR2RGB)
+    image = display.imageNew(rgb.tobytes(), display.RGB, rgb.shape[1], rgb.shape[0])
+    try:
+        display.imagePaste(image, 0, 0, False)
+    finally:
+        display.imageDelete(image)
+
+
+def draw_map(grid, occ, pose, path, targets, goal, status, display=None):
     img = np.full(occ.shape + (3,), 128, np.uint8)
     img[occ == 0], img[occ == 100] = (255, 255, 255), (0, 0, 0)
     for p in path:
@@ -254,7 +263,24 @@ def draw_map(grid, occ, pose, path, targets, goal, status):
     img = cv2.resize(cv2.flip(img, 0), (600, 600), interpolation=cv2.INTER_NEAREST)
     cv2.rectangle(img, (0, 0), (600, 28), (30, 30, 30), -1)
     cv2.putText(img, status, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-    cv2.imshow("map", img)
+    if display is not None:
+        paste_display(display, img)
+    else:
+        cv2.imshow("map", img)
+
+
+def draw_lidar(display, ranges, angles, max_range):
+    size = min(display.getWidth(), display.getHeight())
+    center = size // 2
+    scale = (center - 12) / max_range
+    img = np.full((size, size, 3), 24, np.uint8)
+    valid = np.isfinite(ranges) & (ranges > 0) & (ranges < max_range)
+    rows = np.rint(center - ranges[valid] * np.cos(angles[valid]) * scale).astype(int)
+    cols = np.rint(center - ranges[valid] * np.sin(angles[valid]) * scale).astype(int)
+    img[rows, cols] = (0, 255, 0)
+    cv2.circle(img, (center, center), 4, (0, 128, 255), -1)
+    cv2.putText(img, "LiDAR / forward up", (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+    paste_display(display, img)
 
 
 def save_result(mission, elapsed, pose):
@@ -290,6 +316,10 @@ def main():
         windows = False
     try:
         devices = list_devices(robot)
+        map_display, camera_display = devices.get("Global Map"), devices.get("Camera")
+        lidar_display = devices.get("Lidar Point Cloud")
+        if map_display is not None and camera_display is not None:
+            windows = False
         for name in (LEFT_MOTOR, RIGHT_MOTOR):
             motor = require(devices, name, "모터")
             motors.append(motor)
@@ -428,6 +458,8 @@ def main():
                 if frame is not None and frame.size:
                     dets = percep.detect(frame)
                     for det in dets:
+                        if det["cls"] != "apple" or det.get("color") != "red":
+                            continue
                         xy = localize(det, ranges, angles, pose, max_range)
                         if xy is not None and all(math.isfinite(v) for v in xy):
                             book.add(*xy, det["cls"])
@@ -445,14 +477,21 @@ def main():
             if elapsed - last_status >= STATUS_EVERY_S:
                 print(f"[STATUS] {status} | path={len(mission.path)}")
                 last_status = elapsed
-            if windows:
+            if windows or any(d is not None for d in (map_display, camera_display, lidar_display)):
                 try:
                     if elapsed - last_draw >= 0.2:
                         last_draw = elapsed
-                        draw_map(slam.grid, slam.grid.occupancy(), pose, mission.path, book.confirmed(), mission.goal, status)
+                        if lidar_display is not None:
+                            draw_lidar(lidar_display, ranges, angles, max_range)
+                        if map_display is not None or windows:
+                            draw_map(slam.grid, slam.grid.occupancy(), pose, mission.path, book.confirmed(), mission.goal, status, map_display)
                         if frame is not None:
-                            cv2.imshow("camera", Perception.draw(frame.copy(), dets))
-                    if (cv2.waitKey(1) & 0xFF) == ord("s") and frame is not None:
+                            view = Perception.draw(percep.prediction_frame, dets)
+                            if camera_display is not None:
+                                paste_display(camera_display, view)
+                            elif windows:
+                                cv2.imshow("camera", view)
+                    if windows and (cv2.waitKey(1) & 0xFF) == ord("s") and frame is not None:
                         filename = Path(__file__).resolve().parent / "frame.jpg"
                         print("[SAVE] frame.jpg" if cv2.imwrite(str(filename), frame) else "[WARN] frame.jpg 저장 실패")
                 except cv2.error as exc:

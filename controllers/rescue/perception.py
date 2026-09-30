@@ -3,14 +3,12 @@ import cv2
 import numpy as np
 
 from config import (
-    DETECTOR, TARGET_COLORS, YOLO_MODEL, YOLO_CLASSES, YOLO_CONF,
-    TARGET_MIN_AREA, CONFIRM_N, MERGE_R, CAM_HEIGHT
+    YOLO_MODEL, YOLO_CLASSES, YOLO_CONF,
+    TARGET_MIN_AREA, CONFIRM_N, MERGE_R
 )
 
 TARGET_CLASS = "apple"
 RED_RATIO_THRESHOLD = 0.35
-LIDAR_CORRIDOR_HALF_ANGLE = math.radians(10)
-OBSTACLE_MARGIN = 0.25
 LIDAR_MIN_VALID_RANGE = 0.05
 
 
@@ -42,6 +40,7 @@ class Perception:
                 "red_ratio": item["red_ratio"],
                 "mask": item["mask"]
             }
+            d["conf"] = item["conf"]
             d.update(self._box_geometry(item["box"]))
             out.append(d)
 
@@ -53,21 +52,23 @@ class Perception:
             conf=YOLO_CONF,
             verbose=False
         )[0]
-        self.prediction_frame = res.plot()
+        self.prediction_frame = frame.copy()
 
         if res.boxes is None:
             return []
 
         boxes = res.boxes.xyxy.cpu().numpy()
         classes = res.boxes.cls.cpu().numpy().astype(int)
+        confidences = res.boxes.conf.cpu().numpy()
 
-        best = None
-        best_area = 0
+        detections = []
 
-        for xyxy, class_id in zip(boxes, classes):
+        for xyxy, class_id, confidence in zip(boxes, classes, confidences):
             cls = self._class_name(class_id)
+            if cls == "person":
+                cls = "human"
 
-            if cls != TARGET_CLASS:
+            if cls not in (TARGET_CLASS, "human"):
                 continue
 
             x1, y1, x2, y2 = xyxy
@@ -86,25 +87,20 @@ class Perception:
             if area < TARGET_MIN_AREA:
                 continue
 
-            # ponytail: box includes background; tune ratio or use segmentation if needed.
-            color, red_ratio = self._detect_color(frame[y1:y2, x1:x2], np.ones((bh, bw), dtype=bool))
-
-            if color != "red":
-                continue
-
-            box_area = bw * bh
-
-            if box_area > best_area:
-                best_area = box_area
-                best = {
+            color, red_ratio = "unknown", 0.0
+            if cls == TARGET_CLASS:
+                # ponytail: box includes background; use segmentation if color accuracy falls short.
+                color, red_ratio = self._detect_color(frame[y1:y2, x1:x2], np.ones((bh, bw), dtype=bool))
+            detections.append({
                     "cls": cls,
                     "box": (x1, y1, bw, bh),
                     "color": color,
                     "red_ratio": red_ratio,
-                    "mask": None
-                }
+                    "mask": None,
+                    "conf": float(confidence)
+                })
 
-        return [best] if best is not None else []
+        return detections
 
     def _class_name(self, class_id):
         if isinstance(YOLO_CLASSES, dict) and class_id in YOLO_CLASSES:
@@ -144,6 +140,10 @@ class Perception:
         if ratio >= RED_RATIO_THRESHOLD:
             return "red", ratio
 
+        green_mask = cv2.inRange(hsv, np.array((35, 80, 50), np.uint8), np.array((85, 255, 255), np.uint8)) > 0
+        if np.count_nonzero(green_mask & object_mask) / object_pixels >= RED_RATIO_THRESHOLD:
+            return "green", ratio
+
         return "other", ratio
 
     def _box_geometry(self, box):
@@ -151,15 +151,7 @@ class Perception:
         u = bx + bw / 2
         bearing = -math.atan((u - self.w / 2) / self.f)
 
-        v = by + bh
-        dist = None
-
-        if v < self.h - 2 and v - self.h / 2 > 5:
-            fwd = CAM_HEIGHT * self.f / (v - self.h / 2)
-            lateral = fwd * (u - self.w / 2) / self.f
-            dist = math.hypot(fwd, lateral)
-
-        return {"bearing": bearing, "dist": dist}
+        return {"bearing": bearing, "dist": None}  # No camera-based distance estimate.
 
     @staticmethod
     def draw(frame, dets):
@@ -183,18 +175,9 @@ class Perception:
                 2
             )
 
-            dist_txt = (
-                f"{d['dist']:.2f}m"
-                if d["dist"] is not None
-                else "dist:N/A"
-            )
-
-            txt = (
-                f"{d['cls']} | "
-                f"{d.get('color', 'unknown')} "
-                f"{d.get('red_ratio', 0.0) * 100:.0f}% | "
-                f"{dist_txt}"
-            )
+            txt = f"{d['cls']} {d.get('conf', 0.0):.2f}"
+            if d["cls"] == TARGET_CLASS:
+                txt += f" | {d['color']} (red {d['red_ratio'] * 100:.0f}%)"
 
             cv2.putText(
                 output,
@@ -249,63 +232,20 @@ def range_at(ranges, angles, bearing):
     return float(np.median(win)) if len(win) else None
 
 
-def _path_clear(ranges, angles, bearing, target_dist):
-    ranges = np.asarray(ranges, dtype=float)
-    angles = np.asarray(angles, dtype=float)
-
-    diff = np.abs(_angle_diff(angles, bearing))
-    corridor = diff <= LIDAR_CORRIDOR_HALF_ANGLE
-
-    if not np.any(corridor):
-        return False
-
-    scan = ranges[corridor]
-    scan = scan[
-        np.isfinite(scan) &
-        (scan > LIDAR_MIN_VALID_RANGE)
-    ]
-
-    if len(scan) == 0:
-        return True
-
-    nearest = float(np.min(scan))
-    return nearest >= target_dist - OBSTACLE_MARGIN
-
-
 def localize(det, ranges, angles, pose, max_range):
-    d_cam = det["dist"]
-
-    if (
-        d_cam is None or
-        not math.isfinite(d_cam) or
-        d_cam <= 0 or
-        d_cam >= max_range
-    ):
+    if det["cls"] != TARGET_CLASS or det.get("color") != "red":
         return None
-
     bearing = det["bearing"]
-
-    if not _path_clear(
-        ranges,
-        angles,
-        bearing,
-        d_cam
-    ):
-        return None
-
-    d_lidar = range_at(
-        ranges,
-        angles,
-        bearing
-    )
+    # ponytail: nearest-direction LiDAR return may belong to an occluder; add depth association if needed.
+    d = range_at(ranges, angles, bearing)
 
     if (
-        d_lidar is not None and
-        abs(d_lidar - d_cam) < 0.3
+        d is None or
+        not math.isfinite(d) or
+        d <= 0 or
+        d >= max_range
     ):
-        d = d_lidar
-    else:
-        d = d_cam
+        return None
 
     th = pose[2] + bearing
 

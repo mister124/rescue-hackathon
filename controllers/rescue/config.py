@@ -21,7 +21,7 @@ START_X, START_Y, START_YAW = (
     0.0,
     0.0,
 )  # 시작점 기준 좌표. 보통 (0, 0, 0); 월드 translation 복사 불필요
-NUM_TARGETS = 2  # 찾아야 할 빨간 사과 수
+NUM_TARGETS = 1  # 찾아야 할 빨간 사과 수
 TIME_LIMIT_S = 1000.0  # 제한 시간 [s] (시뮬레이션 시간)
 RETURN_MARGIN_S = 100.0  # 제한 시간 이만큼 전에는 무조건 복귀 시작
 WARMUP_S = 1.0  # 시작 후 이 시간 동안은 지도만 그림
